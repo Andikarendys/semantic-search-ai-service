@@ -11,10 +11,12 @@ class Query(Base):
     query_text = Column(Text, nullable=False)
     embedding = Column(Text, nullable=False)
     model_comparison = Column(JSON, nullable=True)
+    # [BARU] Algoritma yang dipilih user & dipakai utk klasifikasi query ini
+    algorithm = Column(String(50), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
     articles = relationship("Article", back_populates="query")
-    
+
 class Article(Base):
     __tablename__ = "articles"
 
@@ -32,13 +34,12 @@ class Article(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     query = relationship("Query", back_populates="articles")
-    
+
 class User(Base):
     __tablename__ = "users"
-    
+
     user_id = Column(Integer, primary_key=True, index=True)
     username = Column(String(255))
     password = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
-    

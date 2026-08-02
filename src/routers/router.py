@@ -34,12 +34,14 @@ def serialize_article(article: Article) -> dict:
         "jenjang": article.jenjang,
         "confidence": article.confidence
     }
-    
+
 # Search and Classify Konten
 @router.post('/search', response_model=SearchResponse)
 def search_content(request: QueryRequest, db: Session = Depends(get_db)):
     user_query = request.query
     user_id = request.user_id
+    # [BARU] Algoritma yang dipilih user SEBELUM search (dari dropdown frontend)
+    algorithm = request.algorithm
 
     # Generate embedding query user
     new_embedding = embedding_model.encode(user_query)
@@ -69,6 +71,8 @@ def search_content(request: QueryRequest, db: Session = Depends(get_db)):
             return {
                 "source": "cache",
                 "similarity_score": round(score, 4),
+                "algorithm": getattr(similar_query, "algorithm", algorithm),
+                "model_comparison": getattr(similar_query, "model_comparison", None),
                 "articles": [serialize_article(a) for a in articles]
             }
 
@@ -82,19 +86,20 @@ def search_content(request: QueryRequest, db: Session = Depends(get_db)):
         return {
             "source": "serpapi",
             "similarity_score": round(score, 4) if score else None,
+            "algorithm": algorithm,
             "model_comparison": None,
             "articles": []
         }
 
-    # Klasifikasi tiap artikel
+    # Klasifikasi tiap artikel -- [FIX] teruskan algorithm pilihan user
     enriched_articles = []
 
     for item in search_results:
         # Gabung judul + abstract sebagai input klasifikasi
         text = f"{item['title']}. {item['abstract']}"
-        
+
         try:
-            result = classify(text)
+            result = classify(text, algorithm=algorithm)
             subject = result.get("subject", "Umum") if isinstance(result, dict) else "Umum"
             jenjang = result.get("jenjang", "Umum") if isinstance(result, dict) else "Umum"
             confidence = result.get("confidence", 0.85) if isinstance(result, dict) else 0.85
@@ -115,12 +120,18 @@ def search_content(request: QueryRequest, db: Session = Depends(get_db)):
             "confidence": confidence
         })
 
-    # Klasifikasi query untuk perbandingan multi-model
-    query_class_result = classify(user_query)
+    # Klasifikasi query untuk perbandingan multi-model -- [FIX] teruskan algorithm juga,
+    # supaya `algorithm_used` yang tersimpan konsisten dgn yang dipakai per-artikel di atas
+    query_class_result = classify(user_query, algorithm=algorithm)
     model_comparison_data = query_class_result.get("comparison") if query_class_result else None
+    algorithm_used = query_class_result.get("algorithm") if query_class_result else algorithm
 
     # Simpan query dan artikel ke DB
-    saved_query = save_query(db, user_query, new_embedding, user_id, model_comparison=model_comparison_data)
+    saved_query = save_query(
+        db, user_query, new_embedding, user_id,
+        model_comparison=model_comparison_data,
+        algorithm=algorithm_used,
+    )
     save_article(db, saved_query.id, enriched_articles)
 
     # Ambil artikel dari DB biar ada id-nya
@@ -131,6 +142,7 @@ def search_content(request: QueryRequest, db: Session = Depends(get_db)):
     return {
         "source": "serpapi",
         "similarity_score": round(score, 4) if score else None,
+        "algorithm": algorithm_used,
         "model_comparison": model_comparison_data,
         "articles": [serialize_article(a) for a in saved_articles]
     }

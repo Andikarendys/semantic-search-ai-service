@@ -37,7 +37,7 @@ ALGORITHM_WARNINGS = {
            "algoritma lain pada pengujian model (F1-score ±0.59 vs ±0.65-0.69).")
 }
 
-# ── Lazy-Load Resources ───────────────────────────────────────────────
+# ── Lazy-Load Resources ──────────────────────────────────────────────
 _labse_embedding = None
 _label_encoder = None
 _models = {}
@@ -137,7 +137,21 @@ def _predict_one(clean_text: str, algorithm: str, threshold: float = None) -> di
 
 def classify(text: str, algorithm: str = None, threshold: float = None) -> dict:
     """
-    Fungsi utama klasifikasi. Mengambil model dengan tingkat confidence terbesar secara resilient per-model.
+    Fungsi utama klasifikasi.
+
+    [FIX PENTING] Sebelumnya parameter `algorithm` diterima tapi TIDAK PERNAH
+    dipakai -- hasil akhir (subject/jenjang/confidence) selalu diambil dari
+    algoritma dengan confidence tertinggi di antara ke-4 model, mengabaikan
+    pilihan user sepenuhnya. Ini bikin fitur "pilih algoritma sebelum search"
+    tidak mungkin berfungsi walau dropdown-nya sudah dibuat di frontend.
+
+    Sekarang: kalau `algorithm` diisi (user memilih lewat setting), hasil
+    akhir (subject/jenjang/confidence/status) diambil dari algoritma itu
+    secara spesifik. `comparison` tetap berisi hasil KE-4 algoritma (dihitung
+    sekali, tidak mahal), supaya fitur banding di history tetap dapat semua
+    datanya dalam satu request -- tapi field `is_selected` menandai algoritma
+    mana yang benar-benar dipakai user, terpisah dari `is_best` (algoritma
+    dgn confidence tertinggi, murni informatif).
     """
     if not text or not text.strip():
         return None
@@ -147,21 +161,24 @@ def classify(text: str, algorithm: str = None, threshold: float = None) -> dict:
         return None
 
     comparison_list = []
+    results_by_algo = {}
     labels_set = set()
 
-    # Utamakan KNN, SVM, LogReg terlebih dahulu (model ringan dan cepat)
     for algo_key in ["knn", "svm", "logreg", "rf"]:
         try:
             if get_model(algo_key):
                 res = _predict_one(cleaned, algo_key, threshold)
+                results_by_algo[algo_key] = res
                 comparison_list.append({
+                    "algorithm_key": algo_key,
                     "model": ALGO_DISPLAY_NAME.get(algo_key, algo_key.upper()),
                     "confidence": int(round(res["confidence"])),
                     "label": f"{res['subject']} - {res['jenjang']}",
                     "status": res["status"],
                     "passed": res["status"] == "accepted",
                     "subject": res["subject"],
-                    "jenjang": res["jenjang"]
+                    "jenjang": res["jenjang"],
+                    "warning": res.get("warning"),
                 })
                 if res["status"] == "accepted":
                     labels_set.add(f"{res['subject']} - {res['jenjang']}")
@@ -173,6 +190,7 @@ def classify(text: str, algorithm: str = None, threshold: float = None) -> dict:
             "subject": "Umum",
             "jenjang": "Umum",
             "confidence": 0.50,
+            "algorithm": algorithm or DEFAULT_ALGORITHM,
             "best_model": "KNN",
             "status": "accepted",
             "is_consensus": False,
@@ -180,30 +198,35 @@ def classify(text: str, algorithm: str = None, threshold: float = None) -> dict:
             "comparison": []
         }
 
-    comparison_list.sort(key=lambda x: x["confidence"], reverse=True)
+    # Urutan berdasar confidence tertinggi -- dipakai HANYA utk menandai
+    # is_best (informasi tambahan), bukan lagi utk menentukan hasil akhir.
+    comparison_sorted = sorted(comparison_list, key=lambda x: x["confidence"], reverse=True)
+    top_model_key = comparison_sorted[0]["algorithm_key"]
 
-    top_accepted = comparison_list[0]
-    final_subject = top_accepted["subject"]
-    final_jenjang = top_accepted["jenjang"]
-    final_confidence = round(top_accepted["confidence"] / 100.0, 4)
-    best_model_name = top_accepted["model"]
-    best_status = top_accepted["status"]
+    # [FIX] Pilih hasil akhir berdasarkan algoritma yang DIMINTA user.
+    # Kalau algoritma yang diminta gagal/tidak tersedia, fallback ke default.
+    chosen_key = algorithm if algorithm in results_by_algo else DEFAULT_ALGORITHM
+    if chosen_key not in results_by_algo:
+        chosen_key = comparison_sorted[0]["algorithm_key"]  # fallback terakhir
+    chosen_result = results_by_algo[chosen_key]
 
-    top_model_name = comparison_list[0]["model"]
     for c in comparison_list:
-        c["is_best"] = (c["model"] == top_model_name)
+        c["is_best"] = (c["algorithm_key"] == top_model_key)
+        c["is_selected"] = (c["algorithm_key"] == chosen_key)  # [BARU] algoritma yg dipakai user
 
     is_consensus = (len(labels_set) == 1) and len(comparison_list) > 0
 
     return {
-        "subject": final_subject,
-        "jenjang": final_jenjang,
-        "confidence": final_confidence,
-        "best_model": best_model_name,
-        "status": best_status,
+        "subject": chosen_result["subject"],
+        "jenjang": chosen_result["jenjang"],
+        "confidence": round(chosen_result["confidence"] / 100.0, 4),
+        "algorithm": chosen_key,
+        "best_model": ALGO_DISPLAY_NAME.get(chosen_key, chosen_key.upper()),
+        "status": chosen_result["status"],
+        "warning": chosen_result.get("warning"),
         "is_consensus": is_consensus,
         "threshold_passed": True,
-        "comparison": comparison_list
+        "comparison": comparison_list,
     }
 
 def compare_classify(text: str, threshold: float = None) -> dict:
